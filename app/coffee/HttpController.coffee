@@ -95,6 +95,13 @@ module.exports = HttpController =
 			return next(error) if error?
 			res.send 204
 
+	getVersion: (req, res, next = (error) ->) ->
+		{doc_id, project_id, version} = req.params
+		version = parseInt(version, 10)
+		DiffManager.getDocumentBeforeVersion project_id, doc_id, version + 1, (error, content) ->
+			return next(error) if error?
+			res.send content
+
 	archiveProject: (req, res, next = (error) ->) ->
 		project_id = req.params.project_id
 		logger.log project_id: project_id, "archiving all track changes to s3"
