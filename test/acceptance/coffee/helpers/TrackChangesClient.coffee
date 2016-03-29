@@ -1,3 +1,5 @@
+async = require 'async'
+zlib = require 'zlib'
 request = require "request"
 rclient = require("redis").createClient() # Only works locally for now
 {db, ObjectId} = require "../../../../app/js/mongojs"
@@ -74,16 +76,16 @@ module.exports = TrackChangesClient =
 			response.statusCode.should.equal 204
 			callback null
 
-	archiveProject: (project_id, callback = (error) ->) ->
+	pushDocHistory: (project_id, doc_id, callback = (error) ->) ->
 		request.post {
-			url: "http://localhost:3015/project/#{project_id}/archive"
+			url: "http://localhost:3015/project/#{project_id}/doc/#{doc_id}/push"
 		}, (error, response, body) =>
 			response.statusCode.should.equal 204
 			callback(error)
 
-	unarchiveProject: (project_id, callback = (error) ->) ->
+	pullDocHistory: (project_id, doc_id, callback = (error) ->) ->
 		request.post {
-			url: "http://localhost:3015/project/#{project_id}/unarchive"
+			url: "http://localhost:3015/project/#{project_id}/doc/#{doc_id}/pull"
 		}, (error, response, body) =>
 			response.statusCode.should.equal 204
 			callback(error)
@@ -91,18 +93,28 @@ module.exports = TrackChangesClient =
 	buildS3Options: (content, key)->
 		return {
 				aws:
-					key: Settings.filestore.s3.key
-					secret: Settings.filestore.s3.secret
-					bucket: Settings.filestore.stores.user_files
+					key: Settings.trackchanges.s3.key
+					secret: Settings.trackchanges.s3.secret
+					bucket: Settings.trackchanges.stores.doc_history
 				timeout: 30 * 1000
 				json: content
-				uri:"https://#{Settings.filestore.stores.user_files}.s3.amazonaws.com/#{key}"
+				uri:"https://#{Settings.trackchanges.stores.doc_history}.s3.amazonaws.com/#{key}"
 		}
 
-	getS3Doc: (project_id, doc_id, callback = (error, res, body) ->) ->
-		options = TrackChangesClient.buildS3Options(true, project_id+"/changes-"+doc_id)
-		request.get options, callback	
+	getS3Doc: (project_id, doc_id, pack_id, callback = (error, body) ->) ->
+		options = TrackChangesClient.buildS3Options(true, project_id+"/changes-"+doc_id+"/pack-"+pack_id)
+		options.encoding = null
+		request.get options, (err, res, body) ->
+			return callback(error) if error?
+			zlib.gunzip body, (err, result) ->
+				return callback(err) if err?
+				callback(null, JSON.parse(result.toString()))
 
 	removeS3Doc: (project_id, doc_id, callback = (error, res, body) ->) ->
-		options = TrackChangesClient.buildS3Options(true, project_id+"/changes-"+doc_id)
-		request.del options, callback	
+		options = TrackChangesClient.buildS3Options(true, "?prefix=" + project_id + "/changes-" +doc_id)
+		request.get options, (error, res, body) ->
+			keys = body.match /[0-9a-f]{24}\/changes-[0-9a-f]{24}\/pack-[0-9a-f]{24}/g
+			async.eachSeries keys, (key, cb) ->
+				options = TrackChangesClient.buildS3Options(true, key)
+				request.del options, cb
+			, callback

@@ -50,11 +50,8 @@ app.get "/project/:project_id/doc/:doc_id/version/:version", HttpController.getV
 
 app.post "/project/:project_id/doc/:doc_id/version/:version/restore", HttpController.restore
 
-app.post "/doc/:doc_id/pack", HttpController.packDoc
-app.get "/doc/list", HttpController.listDocs
-
-app.post  '/project/:project_id/archive', HttpController.archiveProject
-app.post  '/project/:project_id/unarchive', HttpController.unArchiveProject
+app.post  '/project/:project_id/doc/:doc_id/push', HttpController.pushDocHistory
+app.post  '/project/:project_id/doc/:doc_id/pull', HttpController.pullDocHistory
 
 packWorker = null # use a single packing worker
 

@@ -26,12 +26,10 @@ describe "UpdatesManager", ->
 		describe "when there are no raw ops", ->
 			beforeEach ->
 				@MongoManager.peekLastCompressedUpdate = sinon.stub()
-				@MongoManager.insertCompressedUpdates = sinon.stub()
 				@UpdatesManager.compressAndSaveRawUpdates @project_id, @doc_id, [], @temporary, @callback
 
 			it "should not need to access the database", ->
 				@MongoManager.peekLastCompressedUpdate.called.should.equal false
-				@MongoManager.insertCompressedUpdates.called.should.equal false
 
 			it "should call the callback", ->
 				@callback.called.should.equal true
@@ -65,8 +63,6 @@ describe "UpdatesManager", ->
 				@compressedUpdates = [ { v: 12, op: "compressed-op-11+12" }, { v: 13, op: "compressed-op-12" } ]
 
 				@MongoManager.peekLastCompressedUpdate = sinon.stub().callsArgWith(1, null, @lastCompressedUpdate, @lastCompressedUpdate.v)
-				@MongoManager.modifyCompressedUpdate = sinon.stub().callsArg(2)
-				@MongoManager.insertCompressedUpdates = sinon.stub().callsArg(4)
 				@PackManager.insertCompressedUpdates = sinon.stub().callsArg(5)
 				@UpdateCompressor.compressRawUpdates = sinon.stub().returns(@compressedUpdates)
 
@@ -80,19 +76,14 @@ describe "UpdatesManager", ->
 						.calledWith(@doc_id)
 						.should.equal true
 				
-				it "should compress the last compressed op and the raw ops", ->
+				it "should compress the raw ops", ->
 					@UpdateCompressor.compressRawUpdates
-						.calledWith(@lastCompressedUpdate, @rawUpdates)
+						.calledWith(null, @rawUpdates)
 						.should.equal true
 
-				it "should update the existing op", ->
-					@MongoManager.modifyCompressedUpdate
-						.calledWith(@lastCompressedUpdate, @compressedUpdates[0])
-						.should.equal true
-				
-				it "should save the new compressed ops", ->
-					@MongoManager.insertCompressedUpdates
-						.calledWith(@project_id, @doc_id, @compressedUpdates[1..], @temporary)
+				it "should save the new compressed ops into a pack", ->
+					@PackManager.insertCompressedUpdates
+						.calledWith(@project_id, @doc_id, @lastCompressedUpdate, @compressedUpdates, @temporary)
 						.should.equal true
 
 				it "should call the callback", ->
@@ -130,7 +121,7 @@ describe "UpdatesManager", ->
 
 				it "should only compress the more recent raw ops", ->
 					@UpdateCompressor.compressRawUpdates
-						.calledWith(@lastCompressedUpdate, @rawUpdates.slice(-2))
+						.calledWith(null, @rawUpdates.slice(-2))
 						.should.equal true
 
 			describe "when the raw ops do not follow from the last compressed op version", ->
@@ -143,11 +134,8 @@ describe "UpdatesManager", ->
 						.calledWith(new Error("Tried to apply raw op at version 13 to last compressed update with version 11"))
 						.should.equal true
 
-				it "should not modify any update in mongo", ->
-					@MongoManager.modifyCompressedUpdate.called.should.equal false
-
 				it "should not insert any update into mongo", ->
-					@MongoManager.insertCompressedUpdates.called.should.equal false
+					@PackManager.insertCompressedUpdates.called.should.equal false
 
 		describe "when the raw ops need appending to existing history which is in S3", ->
 			beforeEach ->
@@ -281,7 +269,7 @@ describe "UpdatesManager", ->
 		beforeEach ->
 			@updates = ["mock-updates"]
 			@options = { to: "mock-to", limit: "mock-limit" }
-			@MongoManager.getDocUpdates = sinon.stub().callsArgWith(2, null, @updates)
+			@PackManager.getOpsByVersionRange = sinon.stub().callsArgWith(4, null, @updates)
 			@UpdatesManager.processUncompressedUpdatesWithLock = sinon.stub().callsArg(2)
 			@UpdatesManager.getDocUpdates @project_id, @doc_id, @options, @callback
 
@@ -291,8 +279,8 @@ describe "UpdatesManager", ->
 				.should.equal true
 
 		it "should get the updates from the database", ->
-			@MongoManager.getDocUpdates
-				.calledWith(@doc_id, @options)
+			@PackManager.getOpsByVersionRange
+				.calledWith(@project_id, @doc_id, @options.from, @options.to)
 				.should.equal true
 
 		it "should return the updates", ->
@@ -322,29 +310,6 @@ describe "UpdatesManager", ->
 		it "should return the updates with the filled details", ->
 			@callback.calledWith(null, @updatesWithUserInfo).should.equal true
 
-	describe "getProjectUpdates", ->
-		beforeEach ->
-			@updates = ["mock-updates"]
-			@options = { before: "mock-before", limit: "mock-limit" }
-			@MongoManager.getProjectUpdates = sinon.stub().callsArgWith(2, null, @updates)
-			@UpdatesManager.processUncompressedUpdatesForProject = sinon.stub().callsArg(1)
-			@UpdatesManager.getProjectUpdates @project_id, @options, @callback
-
-		it "should process any outstanding updates", ->
-			@UpdatesManager.processUncompressedUpdatesForProject
-				.calledWith(@project_id)
-				.should.equal true
-
-		it "should get the updates from the database", ->
-			@MongoManager.getProjectUpdates
-				.calledWith(@project_id, @options)
-				.should.equal true
-
-		it "should return the updates", ->
-			@callback
-				.calledWith(null, @updates)
-				.should.equal true
-
 	describe "processUncompressedUpdatesForProject", ->
 		beforeEach (done) ->
 			@doc_ids = ["mock-id-1", "mock-id-2"]
@@ -368,132 +333,148 @@ describe "UpdatesManager", ->
 		it "should call the callback", ->
 			@callback.called.should.equal true
 
-	describe "getProjectUpdatesWithUserInfo", ->
+	describe "getSummarizedProjectUpdates", ->
 		beforeEach ->
-			@updates = ["mock-updates"]
+			@updates = [{doc_id: 123, v:456, op: "mock-updates", meta: {user_id: 123, start_ts: 1233, end_ts:1234}}]
 			@options = { before: "mock-before", limit: "mock-limit" }
+			@summarizedUpdates = [
+				{meta: {user_ids: [123], start_ts: 1233, end_ts:1234},docs:{"123":{fromV:456,toV:456}}}
+			]
 			@updatesWithUserInfo = ["updates-with-user-info"]
-			@UpdatesManager.getProjectUpdates = sinon.stub().callsArgWith(2, null, @updates)
-			@UpdatesManager.fillUserInfo = sinon.stub().callsArgWith(1, null, @updatesWithUserInfo)
-			@UpdatesManager.getProjectUpdatesWithUserInfo @project_id, @options, @callback
+			@done_state = false
+			@iterator =
+				next: (cb) =>
+					@done_state = true
+					cb(null, @updates)
+				done: () =>
+					@done_state
+			@PackManager.makeProjectIterator = sinon.stub().callsArgWith(2, null, @iterator)
+			@UpdatesManager.processUncompressedUpdatesForProject = sinon.stub().callsArg(1)
+			@UpdatesManager.fillSummarizedUserInfo = sinon.stub().callsArgWith(1, null, @updatesWithUserInfo)
+			@UpdatesManager.getSummarizedProjectUpdates @project_id, @options, @callback
 
-		it "should get the updates", ->
-			@UpdatesManager.getProjectUpdates
-				.calledWith(@project_id, @options)
+		it "should process any outstanding updates", ->
+			@UpdatesManager.processUncompressedUpdatesForProject
+				.calledWith(@project_id)
 				.should.equal true
 
-		it "should file the updates with the user info", ->
-			@UpdatesManager.fillUserInfo
-				.calledWith(@updates)
+		it "should get the updates", ->
+			@PackManager.makeProjectIterator
+				.calledWith(@project_id, @options.before)
+				.should.equal true
+
+		it "should fill the updates with the user info", ->
+			@UpdatesManager.fillSummarizedUserInfo
+				.calledWith(@summarizedUpdates)
 				.should.equal true
 
 		it "should return the updates with the filled details", ->
 			@callback.calledWith(null, @updatesWithUserInfo).should.equal true
 
-	describe "_extendBatchOfSummarizedUpdates", ->
-		beforeEach ->
-			@before = Date.now()
-			@min_count = 2
-			@existingSummarizedUpdates = ["summarized-updates-3"]
-			@summarizedUpdates = ["summarized-updates-3", "summarized-update-2", "summarized-update-1"]
+	# describe "_extendBatchOfSummarizedUpdates", ->
+	# 	beforeEach ->
+	# 		@before = Date.now()
+	# 		@min_count = 2
+	# 		@existingSummarizedUpdates = ["summarized-updates-3"]
+	# 		@summarizedUpdates = ["summarized-updates-3", "summarized-update-2", "summarized-update-1"]
 
-		describe "when there are updates to get", ->
-			beforeEach ->
-				@updates = [
-					{op: "mock-op-1", meta: end_ts: @before - 10},
-					{op: "mock-op-1", meta: end_ts: @nextBeforeTimestamp = @before - 20}
-				]
-				@existingSummarizedUpdates = ["summarized-updates-3"]
-				@summarizedUpdates = ["summarized-updates-3", "summarized-update-2", "summarized-update-1"]
-				@UpdatesManager._summarizeUpdates = sinon.stub().returns(@summarizedUpdates)
-				@UpdatesManager.getProjectUpdatesWithUserInfo = sinon.stub().callsArgWith(2, null, @updates)
-				@UpdatesManager._extendBatchOfSummarizedUpdates @project_id, @existingSummarizedUpdates, @before, @min_count, @callback
+	# 	describe "when there are updates to get", ->
+	# 		beforeEach ->
+	# 			@updates = [
+	# 				{op: "mock-op-1", meta: end_ts: @before - 10},
+	# 				{op: "mock-op-1", meta: end_ts: @nextBeforeTimestamp = @before - 20}
+	# 			]
+	# 			@existingSummarizedUpdates = ["summarized-updates-3"]
+	# 			@summarizedUpdates = ["summarized-updates-3", "summarized-update-2", "summarized-update-1"]
+	# 			@UpdatesManager._summarizeUpdates = sinon.stub().returns(@summarizedUpdates)
+	# 			@UpdatesManager.getProjectUpdatesWithUserInfo = sinon.stub().callsArgWith(2, null, @updates)
+	# 			@UpdatesManager._extendBatchOfSummarizedUpdates @project_id, @existingSummarizedUpdates, @before, @min_count, @callback
 
-			it "should get the updates", ->
-				@UpdatesManager.getProjectUpdatesWithUserInfo
-					.calledWith(@project_id, { before: @before, limit: 3 * @min_count })
-					.should.equal true
+	# 		it "should get the updates", ->
+	# 			@UpdatesManager.getProjectUpdatesWithUserInfo
+	# 				.calledWith(@project_id, { before: @before, limit: 3 * @min_count })
+	# 				.should.equal true
 
-			it "should summarize the updates", ->
-				@UpdatesManager._summarizeUpdates
-					.calledWith(@updates, @existingSummarizedUpdates)
-					.should.equal true
+	# 		it "should summarize the updates", ->
+	# 			@UpdatesManager._summarizeUpdates
+	# 				.calledWith(@updates, @existingSummarizedUpdates)
+	# 				.should.equal true
 
-			it "should call the callback with the summarized updates and the next before timestamp", ->
-				@callback.calledWith(null, @summarizedUpdates, @nextBeforeTimestamp).should.equal true
+	# 		it "should call the callback with the summarized updates and the next before timestamp", ->
+	# 			@callback.calledWith(null, @summarizedUpdates, @nextBeforeTimestamp).should.equal true
 
-		describe "when there are no more updates", ->
-			beforeEach ->
-				@updates = []
-				@UpdatesManager._summarizeUpdates = sinon.stub().returns(@summarizedUpdates)
-				@UpdatesManager.getProjectUpdatesWithUserInfo = sinon.stub().callsArgWith(2, null, @updates)
-				@UpdatesManager._extendBatchOfSummarizedUpdates @project_id, @existingSummarizedUpdates, @before, @min_count, @callback
+	# 	describe "when there are no more updates", ->
+	# 		beforeEach ->
+	# 			@updates = []
+	# 			@UpdatesManager._summarizeUpdates = sinon.stub().returns(@summarizedUpdates)
+	# 			@UpdatesManager.getProjectUpdatesWithUserInfo = sinon.stub().callsArgWith(2, null, @updates)
+	# 			@UpdatesManager._extendBatchOfSummarizedUpdates @project_id, @existingSummarizedUpdates, @before, @min_count, @callback
 
-			it "should call the callback with the summarized updates and null for nextBeforeTimestamp", ->
-				@callback.calledWith(null, @summarizedUpdates, null).should.equal true
+	# 		it "should call the callback with the summarized updates and null for nextBeforeTimestamp", ->
+	# 			@callback.calledWith(null, @summarizedUpdates, null).should.equal true
 
-	describe "getSummarizedProjectUpdates", ->
-		describe "when one batch of updates is enough to meet the limit", ->
-			beforeEach ->
-				@before = Date.now()
-				@min_count = 2
-				@updates = ["summarized-updates-3", "summarized-updates-2"]
-				@nextBeforeTimestamp = @before - 100
-				@UpdatesManager._extendBatchOfSummarizedUpdates = sinon.stub().callsArgWith(4, null, @updates, @nextBeforeTimestamp)
-				@UpdatesManager.getSummarizedProjectUpdates @project_id, { before: @before, min_count: @min_count }, @callback
+	# describe "getSummarizedProjectUpdates", ->
+	# 	describe "when one batch of updates is enough to meet the limit", ->
+	# 		beforeEach ->
+	# 			@before = Date.now()
+	# 			@min_count = 2
+	# 			@updates = ["summarized-updates-3", "summarized-updates-2"]
+	# 			@nextBeforeTimestamp = @before - 100
+	# 			@UpdatesManager._extendBatchOfSummarizedUpdates = sinon.stub().callsArgWith(4, null, @updates, @nextBeforeTimestamp)
+	# 			@UpdatesManager.getSummarizedProjectUpdates @project_id, { before: @before, min_count: @min_count }, @callback
 
-			it "should get the batch of summarized updates", ->
-				@UpdatesManager._extendBatchOfSummarizedUpdates
-					.calledWith(@project_id, [], @before, @min_count)
-					.should.equal true
+	# 		it "should get the batch of summarized updates", ->
+	# 			@UpdatesManager._extendBatchOfSummarizedUpdates
+	# 				.calledWith(@project_id, [], @before, @min_count)
+	# 				.should.equal true
 
-			it "should call the callback with the updates", ->
-				@callback.calledWith(null, @updates, @nextBeforeTimestamp).should.equal true
+	# 		it "should call the callback with the updates", ->
+	# 			@callback.calledWith(null, @updates, @nextBeforeTimestamp).should.equal true
 
-		describe "when multiple batches are needed to meet the limit", ->
-			beforeEach ->
-				@before = Date.now()
-				@min_count = 4
-				@firstBatch =  [{ toV: 6, fromV: 6 }, { toV: 5, fromV: 5 }]
-				@nextBeforeTimestamp = @before - 100
-				@secondBatch = [{ toV: 4, fromV: 4 }, { toV: 3, fromV: 3 }]
-				@nextNextBeforeTimestamp = @before - 200
-				@UpdatesManager._extendBatchOfSummarizedUpdates = (project_id, existingUpdates, before, desiredLength, callback) =>
-					if existingUpdates.length == 0
-						callback null, @firstBatch, @nextBeforeTimestamp
-					else
-						callback null, @firstBatch.concat(@secondBatch), @nextNextBeforeTimestamp
-				sinon.spy @UpdatesManager, "_extendBatchOfSummarizedUpdates"
-				@UpdatesManager.getSummarizedProjectUpdates @project_id, { before: @before, min_count: @min_count }, @callback
+	# 	describe "when multiple batches are needed to meet the limit", ->
+	# 		beforeEach ->
+	# 			@before = Date.now()
+	# 			@min_count = 4
+	# 			@firstBatch =  [{ toV: 6, fromV: 6 }, { toV: 5, fromV: 5 }]
+	# 			@nextBeforeTimestamp = @before - 100
+	# 			@secondBatch = [{ toV: 4, fromV: 4 }, { toV: 3, fromV: 3 }]
+	# 			@nextNextBeforeTimestamp = @before - 200
+	# 			@UpdatesManager._extendBatchOfSummarizedUpdates = (project_id, existingUpdates, before, desiredLength, callback) =>
+	# 				if existingUpdates.length == 0
+	# 					callback null, @firstBatch, @nextBeforeTimestamp
+	# 				else
+	# 					callback null, @firstBatch.concat(@secondBatch), @nextNextBeforeTimestamp
+	# 			sinon.spy @UpdatesManager, "_extendBatchOfSummarizedUpdates"
+	# 			@UpdatesManager.getSummarizedProjectUpdates @project_id, { before: @before, min_count: @min_count }, @callback
 
-			it "should get the first batch of summarized updates", ->
-				@UpdatesManager._extendBatchOfSummarizedUpdates
-					.calledWith(@project_id, [], @before, @min_count)
-					.should.equal true
+	# 		it "should get the first batch of summarized updates", ->
+	# 			@UpdatesManager._extendBatchOfSummarizedUpdates
+	# 				.calledWith(@project_id, [], @before, @min_count)
+	# 				.should.equal true
 
-			it "should get the second batch of summarized updates", ->
-				@UpdatesManager._extendBatchOfSummarizedUpdates
-					.calledWith(@project_id, @firstBatch, @nextBeforeTimestamp, @min_count)
-					.should.equal true
+	# 		it "should get the second batch of summarized updates", ->
+	# 			@UpdatesManager._extendBatchOfSummarizedUpdates
+	# 				.calledWith(@project_id, @firstBatch, @nextBeforeTimestamp, @min_count)
+	# 				.should.equal true
 
-			it "should call the callback with all the updates", ->
-				@callback.calledWith(null, @firstBatch.concat(@secondBatch), @nextNextBeforeTimestamp).should.equal true
+	# 		it "should call the callback with all the updates", ->
+	# 			@callback.calledWith(null, @firstBatch.concat(@secondBatch), @nextNextBeforeTimestamp).should.equal true
 
-		describe "when the end of the database is hit", ->
-			beforeEach ->
-				@before = Date.now()
-				@min_count = 4
-				@updates =  [{ toV: 6, fromV: 6 }, { toV: 5, fromV: 5 }]
-				@UpdatesManager._extendBatchOfSummarizedUpdates = sinon.stub().callsArgWith(4, null, @updates, null)
-				@UpdatesManager.getSummarizedProjectUpdates @project_id, { before: @before, min_count: @min_count }, @callback
+	# 	describe "when the end of the database is hit", ->
+	# 		beforeEach ->
+	# 			@before = Date.now()
+	# 			@min_count = 4
+	# 			@updates =  [{ toV: 6, fromV: 6 }, { toV: 5, fromV: 5 }]
+	# 			@UpdatesManager._extendBatchOfSummarizedUpdates = sinon.stub().callsArgWith(4, null, @updates, null)
+	# 			@UpdatesManager.getSummarizedProjectUpdates @project_id, { before: @before, min_count: @min_count }, @callback
 
-			it "should get the batch of summarized updates", ->
-				@UpdatesManager._extendBatchOfSummarizedUpdates
-					.calledWith(@project_id, [], @before, @min_count)
-					.should.equal true
+	# 		it "should get the batch of summarized updates", ->
+	# 			@UpdatesManager._extendBatchOfSummarizedUpdates
+	# 				.calledWith(@project_id, [], @before, @min_count)
+	# 				.should.equal true
 
-			it "should call the callback with the updates", ->
-				@callback.calledWith(null, @updates, null).should.equal true
+	# 		it "should call the callback with the updates", ->
+	# 			@callback.calledWith(null, @updates, null).should.equal true
 
 	describe "fillUserInfo", ->
 		describe "with valid users", ->
@@ -593,14 +574,14 @@ describe "UpdatesManager", ->
 			result = @UpdatesManager._summarizeUpdates [{
 				doc_id: "doc-id-1"
 				meta:
-					user: @user_1
+					user_id: @user_1.id
 					start_ts: @now + 20
 					end_ts:   @now + 30
 				v: 5
 			}, {
 				doc_id: "doc-id-1"
 				meta:
-					user: @user_2
+					user_id: @user_2.id
 					start_ts: @now
 					end_ts:   @now + 10
 				v: 4
@@ -612,7 +593,7 @@ describe "UpdatesManager", ->
 						fromV: 4
 						toV: 5
 				meta:
-					users: [@user_1, @user_2]
+					user_ids: [@user_1.id, @user_2.id]
 					start_ts: @now
 					end_ts:   @now + 30
 			}]
@@ -622,14 +603,14 @@ describe "UpdatesManager", ->
 			result = @UpdatesManager._summarizeUpdates [{
 				doc_id: "doc-id-1"
 				meta:
-					user: @user_2
+					user_id: @user_2.id
 					start_ts: @now + oneDay
 					end_ts:   @now + oneDay + 10
 				v: 5
 			}, {
 				doc_id: "doc-id-1"
 				meta:
-					user: @user_1
+					user_id: @user_1.id
 					start_ts: @now
 					end_ts:   @now + 10
 				v: 4
@@ -640,7 +621,7 @@ describe "UpdatesManager", ->
 						fromV: 5
 						toV: 5
 				meta:
-					users: [@user_2]
+					user_ids: [@user_2.id]
 					start_ts: @now + oneDay
 					end_ts:   @now + oneDay + 10
 			}, {
@@ -649,7 +630,7 @@ describe "UpdatesManager", ->
 						fromV: 4
 						toV: 4
 				meta:
-					users: [@user_1]
+					user_ids: [@user_1.id]
 					start_ts: @now
 					end_ts:   @now + 10
 			}]
@@ -658,14 +639,14 @@ describe "UpdatesManager", ->
 			result = @UpdatesManager._summarizeUpdates [{
 				doc_id: "doc-id-2"
 				meta:
-					user: @user_1
+					user_id: @user_1.id
 					start_ts: @now + 20
 					end_ts:   @now + 30
 				v: 5
 			}, {
 				doc_id: "doc-id-2"
 				meta:
-					user: @user_2
+					user_id: @user_2.id
 					start_ts: @now
 					end_ts:   @now + 10
 				v: 4
@@ -675,7 +656,7 @@ describe "UpdatesManager", ->
 						fromV: 6
 						toV: 8
 				meta:
-					users: [@user_1]
+					user_ids: [@user_1.id]
 					start_ts: @now + 40
 					end_ts:   @now + 50
 			}]
@@ -688,7 +669,7 @@ describe "UpdatesManager", ->
 						toV: 5
 						fromV: 4
 				meta:
-					users: [@user_1, @user_2]
+					user_ids: [@user_1.id, @user_2.id]
 					start_ts: @now
 					end_ts:   @now + 50
 			}]
@@ -697,14 +678,14 @@ describe "UpdatesManager", ->
 			result = @UpdatesManager._summarizeUpdates [{
 				doc_id: "doc-id-1"
 				meta:
-					user: @user_1
+					user_id: @user_1.id
 					start_ts: @now + 20
 					end_ts:   @now + 30
 				v: 5
 			}, {
 				doc_id: "doc-id-1"
 				meta:
-					user: null
+					user_id: null
 					start_ts: @now
 					end_ts:   @now + 10
 				v: 4
@@ -715,7 +696,7 @@ describe "UpdatesManager", ->
 						fromV: 4
 						toV: 5
 				meta:
-					users: [@user_1, null]
+					user_ids: [@user_1.id, null]
 					start_ts: @now
 					end_ts:   @now + 30
 			}]
@@ -724,14 +705,14 @@ describe "UpdatesManager", ->
 			result = @UpdatesManager._summarizeUpdates [{
 				doc_id: "doc-id-1"
 				meta:
-					user: null
+					user_id: null
 					start_ts: @now
 					end_ts:   @now + 10
 				v: 4
 			}, {
 				doc_id: "doc-id-1"
 				meta:
-					user: @user_1
+					user_id: @user_1.id
 					start_ts: @now + 20
 					end_ts:   @now + 30
 				v: 5
@@ -742,7 +723,7 @@ describe "UpdatesManager", ->
 						fromV: 4
 						toV: 5
 				meta:
-					users: [null, @user_1]
+					user_ids: [null, @user_1.id]
 					start_ts: @now
 					end_ts:   @now + 30
 			}]
@@ -751,21 +732,21 @@ describe "UpdatesManager", ->
 			result = @UpdatesManager._summarizeUpdates [{
 				doc_id: "doc-id-1"
 				meta:
-					user: @user_1
+					user_id: @user_1.id
 					start_ts: @now + 20
 					end_ts:   @now + 30
 				v: 5
 			}, {
 				doc_id: "doc-id-1"
 				meta:
-					user: null
+					user_id: null
 					start_ts: @now
 					end_ts:   @now + 10
 				v: 4
 			}, {
 				doc_id: "doc-id-1"
 				meta:
-					user: null
+					user_id: null
 					start_ts: @now + 2
 					end_ts:   @now + 4
 				v: 4
@@ -776,7 +757,7 @@ describe "UpdatesManager", ->
 						fromV: 4
 						toV: 5
 				meta:
-					users: [@user_1, null]
+					user_ids: [@user_1.id, null]
 					start_ts: @now
 					end_ts:   @now + 30
 			}]
