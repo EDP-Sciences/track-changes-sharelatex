@@ -46,6 +46,8 @@ app.get "/project/:project_id/updates", HttpController.getUpdates
 
 app.post "/project/:project_id/flush", HttpController.flushProject
 
+app.get "/project/:project_id/doc/:doc_id/version/:version", HttpController.getVersion
+
 app.post "/project/:project_id/doc/:doc_id/version/:version/restore", HttpController.restore
 
 app.post  '/project/:project_id/doc/:doc_id/push', HttpController.pushDocHistory
