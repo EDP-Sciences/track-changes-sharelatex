@@ -11,11 +11,7 @@ Metrics = require "./Metrics"
 DAYS = 24 * 3600 * 1000 # one day in milliseconds
 
 createStream = (streamConstructor, project_id, doc_id, pack_id) ->
-	AWS_CONFIG =
-		accessKeyId: settings.trackchanges.s3.key
-		secretAccessKey: settings.trackchanges.s3.secret
-
-	return streamConstructor new AWS.S3(AWS_CONFIG), {
+	return streamConstructor new AWS.S3(), {
 		"Bucket": settings.trackchanges.stores.doc_history,
 		"Key": project_id+"/changes-"+doc_id+"/pack-"+pack_id
 	}
